@@ -1,0 +1,100 @@
+---
+title: Hyper-Parameter Optimization for Multilayer Artificial Neural Networks using
+  "H2O" Package in R
+author: "Alexander Kuznetsov"
+date: "September 17, 2018"
+output: html_document
+---
+
+## Introduction
+The purpose of this project is optimization of hyper-parameters for multilayer artificial neural network (ANN) used to recognize handwritten digits. "H2O" package is one of the best and easiest to work with packages in R for deep learning applications. Vincenzo Lomonaco in his [Udemy course](http://www.udemy.com/deep-learning-with-r/) provides excellent introduction to the neural networks implementation with R. ANNs are instrumental in the field of computer vision. However, neural networks parameters, such as number of neurons, activation function, regularization methods, etc. are often have to be selected manually. "H2O" package, as illustrated below, implements built-in functions, which are capable of selecting best ANN's hyper-parameters to build the model.
+
+## Data Set
+Training set from [Kaggle's competittion](http://www.kaggle.com/c/digit-recognizer/data) will be used in this project. This set contains 42,000 images stored in 28x28 matrix. Although Kaggle provides separate testing set, for the purposes of this exersice, the training set will be split into 3 sets used for training, validation and testing. Therefore, 26,000 images are to be used for training, 8,000 for validation with another 8,000 for testing purposes. First column of the data set contains labels, and the rest 784 columns - pixel values. Undoubtedly, larger training set would result in higher accuracy of the model. However, the goal is to see implementation of "H2O" package for optimization of multilayer ANN's hyper-parameters.
+
+## Discussion
+"H2O" package is easy to install and use in R. It allows parallel computing option for multi-core machines. Similarly to other deep learning packages (for example "MxNet"), it requires transformation of data set into special format. In case of "H2O", data are transformed into H2O object with *as.h2o* command.  
+
+```{r echo=TRUE, eval=TRUE, warning=FALSE, message=FALSE}
+# Loading "H2O":
+library(h2o)
+
+# Loading data set:
+digits.data <- read.csv("dataset.csv")
+
+# This is optional function that switches off progress bar, which is displayed by default in "H2O" package:
+h2o.no_progress()
+
+# Selecting 3 cores out of 4 available on the machine. 4th core is used to run OS as calculations may take up to 20 minutes:
+h2o.init(nthreads=3)
+
+# Identifying training, validation and testing sets:
+train <- digits.data[1:26000,]
+valid <- digits.data[26001:34000,]
+test <- digits.data[34001:42000,]
+
+# Labels are converted into factor variable:
+train$label <- as.factor(train$label)
+
+# Transforming data sets into H2O objects:
+train_h2o <- as.h2o(train)
+valid_h2o <- as.h2o(valid)
+test_h2o <- as.h2o(test)
+```
+Package offers excellent choices of hyper-parameters to be evaluated for multilayer ANN: activation functions, number of neurons in hidden layers, regularization. Activation functions can be selected with "dropout" option, allowing random drop out of some units in the ANN. This is one of the most powerful regularization methods to optimize the ANN and avoid overfitting. Three models with various number of hidden layers are selected for evaluation: 
+
+1. ANN with 4 hidden layers containing 349, 174, 87 and 29 neurons respectively
+
+2. ANN with 3 hidden layers containing 174, 87 and 29 neurons respectively
+
+3. ANN with 2 hidden layers containing 87 and 29 neurons respectively
+
+Number of neurons (units) for each layer were selected as to shrink the input of 784-long vector at each layer.
+Additionally, neuron dropout rate can be specified for the input layer with 'input_dropout_ratio' option. Three different dropout rates are going to be tried in this case: 0, 5% and 10%. Lasso (L1) and Ridge (L2) regularizations are also added. Three values of $\lambda$ parameter are to be tested: 0, 10^-5^, 10^-4^.  
+Documentation for *h2o.grid* function summarizes many options available for optimization of ANN hyper-parameters. One of the options in 'search_criteria' allows optimization over all possible parameters ("Cartesian") or only the ones specified in your code ("RandomDiscrete").
+
+```{r echo=TRUE, eval=TRUE, warning=FALSE, message=FALSE}
+h2o.no_progress()
+# Selecting hyper-parameters:
+hyper_params <- list(activation = c("Rectifier","Tanh","Maxout", "RectifierWithDropout","TanhWithDropout", "MaxoutWithDropout"), hidden = list(c(349, 174, 87, 29), c(174, 87, 29), c(87, 29)), input_dropout_ratio = c(0, 0.05, 0.1), l1 = seq(0, 1e-5, 1e-4), l2 = seq(0, 1e-5, 1e-4))
+
+# Selecting optimal model search criteria. Search will stop once top 5 models are within 1% of each other:
+search_criteria = list(strategy = "RandomDiscrete", max_runtime_secs = 600, max_models = 100, seed=1234567, stopping_rounds=10, stopping_tolerance=1e-2)
+
+# Running search for the optimal models:
+dl_random_grid <- h2o.grid(algorithm="deeplearning", grid_id = "dl_grid_random", training_frame=train_h2o, validation_frame=valid_h2o, x=2:785, y=1, epochs=1, stopping_metric="logloss", stopping_tolerance=1e-2, stopping_rounds=3, hyper_params = hyper_params, search_criteria = search_criteria)    
+
+# Sorting models:                            
+grid <- h2o.getGrid("dl_grid_random",sort_by="logloss", decreasing=FALSE)
+```
+## Results
+Let's look at three top performing models selected by "H2O". We will look at each model hyper-parameters and accuracy based on training and test sets. 
+
+### Model 1
+Following code identifies the top performing ANN model:
+```{r echo=TRUE, eval=TRUE, warning=FALSE, message=FALSE}
+h2o.no_progress()
+grid@summary_table[1,]
+best_model <- h2o.getModel(grid@model_ids[[1]]) 
+best_model
+```
+Best model utilizes hyperbolic tangent (tanh) as activation function, uses all four hidden layers with 349, 174, 87 and 29 units. No regularization such as Dropout, Lasso or Ridge was necessary to achieve error rate as specified above for training and validation sets. Accuracy of this model reaches values close to 96% on training set (100%-error rate) and close to 95% on validation set.
+Finally, accuracy on testing set can be found below to be close to 94-95%. This indicates that model overfits slightly because of higher accuracy on training set vs. validation and testing sets.
+```{r echo=TRUE, eval=TRUE, warning=FALSE, message=FALSE}
+yhat <- h2o.predict(best_model, test_h2o)
+h2o.confusionMatrix(best_model, test_h2o)
+```
+### Models 2 and 3
+Next two models are somewhat less accurate and have error rates within 6-7% which translates into 93-94% accuracy. In order to save some space in this report, I would like to list only final hyper-parameters selected by "H2O".
+```{r echo=TRUE, eval=TRUE, warning=FALSE, message=FALSE}
+h2o.no_progress()
+# Model 2
+grid@summary_table[2,]
+
+# Model 3
+grid@summary_table[3,]
+```
+Interestingly, 2nd and 3rd best models often use rectifier instead of hyperbolic tangent as activation function, and requires less neurons (3 hidden layers instead of 4!). One of the models may also use 10% dropout rate on input layer as regularization. However, accuracy is not that much different from best performing model. If you try to replicate this code, you may get different models than the ones shown above. Hyper-parameter search starts with random selection which can be controlled to some extent by setting seed value. However, outcomes vary at each code execution. This report demonstrates only one of many possible outcomes for ANN's hyper-parameters. 
+
+## Conclusions
+Artificial neural networks are extremely powerful algorithms when it comes to computer vision. Simple ANNs have quite high accuracy in recognizing handwritten numbers, which is probably only marginally worse than human capabilities for the task. ANNs such as convolutional neural networks are even better in image recognition than simple multilayer ANNs described in this report. Comparison of 3 best performing models suggests that rectifier and hyperbolic tangent are probably the best activation functions. Dropout regularization seems to work the best vs. L1 and L2 regularizations. Interestingly, best performing ANNs do not require large number of units. ANNs are clearly powerful tools for variety of applications. To my opinion, Python has more options for deep learning than R. Nevertheless, "H2O" is one the best packages for machine learning algorithms in R.
